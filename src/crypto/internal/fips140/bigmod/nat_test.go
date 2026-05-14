@@ -415,6 +415,185 @@ func testMul(t *testing.T, n int) {
 	}
 }
 
+func uintToBigWords(x []uint) []big.Word {
+	w := make([]big.Word, len(x))
+	for i := range x {
+		w[i] = big.Word(x[i])
+	}
+	return w
+}
+
+func mustDecodeHex(s string) []byte {
+	b, err := hex.DecodeString(s)
+	if err != nil {
+		panic(err)
+	}
+	return b
+}
+
+func TestMontgomeryMul_UsingSetBits(t *testing.T) {
+	// n := 2048
+
+	mHex := "80000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000001"
+
+	aHex := "123456789abcde000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000001ddddddddddddd01020304050607"
+
+	bHex := "070605040302010000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000abcdefabcdefabcdefabcdef00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000001020304050607"
+
+	mBytes := mustDecodeHex(mHex)
+	m, err := NewModulus(mBytes) // from bigmod
+	if err != nil {
+		panic(err)
+	}
+
+	aBytes := mustDecodeHex(aHex)
+	a := new(Nat)
+	a, err = a.SetBytes(aBytes, m)
+	if err != nil {
+		panic(err)
+	}
+
+	bBytes := mustDecodeHex(bHex)
+	b := new(Nat)
+	b, err = b.SetBytes(bBytes, m)
+	if err != nil {
+		panic(err)
+	}
+
+	// fmt.Printf("m = %x\n", m.nat.limbs)
+	// fmt.Printf("a = %x\n", a.Bytes(m))
+	// fmt.Printf("b = %x\n", b.Bytes(m))
+
+	a.Mul(b, m)
+
+	resBytes := a.Bytes(m)
+
+	expHex := "7f9e616be0e39734cb3d46a30e440000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000140b39d40b39d377014e07fb9dc9daaa1d85555c69de98eb7acbd2ae782803cd7c000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000001e19f3ab40b401c22263868c7657d9a1ed790144"
+
+	expBytes := mustDecodeHex(expHex)
+
+	if !bytes.Equal(resBytes, expBytes) {
+		t.Errorf("got %x, want %x", resBytes, expBytes)
+	}
+}
+
+func TestMontgomeryMul2048_FromAuBu(t *testing.T) {
+	// Kiran - Fixed inputs a, b and m for testing
+	au := []uint{
+		0xdd01020304050607,
+		0x00001ddddddddddd,
+		0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+		0x123456789abcde00,
+	}
+
+	bu := []uint{
+		0x0001020304050607,
+		0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+		0xcdef000000000000,
+		0xefabcdefabcdefab,
+		0x000000000000abcd,
+		0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+		0x0706050403020100,
+	}
+
+	if len(au) != 32 || len(bu) != 32 {
+		t.Fatal("inputs must be 32 limbs")
+	}
+
+	A := &Nat{limbs: append([]uint(nil), au...)}
+	B := &Nat{limbs: append([]uint(nil), bu...)}
+
+	// modulus (same size, must be odd)
+	mNat := &Nat{limbs: make([]uint, 32)}
+	mNat.limbs[0] = 1
+	mNat.limbs[31] = 1 << 63
+
+	mBytes := new(big.Int).SetBits(uintToBigWords(mNat.limbs)).Bytes()
+	m, err := NewModulus(mBytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	xR := new(Nat).set(A)
+	xR.montgomeryRepresentation(m)
+
+	out := new(Nat).reset(32)
+	// out.montgomeryMul2048(A, B, m)
+	out.montgomeryMul2048(xR, B, m)
+
+	got := out.Bytes(m)
+
+	// reference check (same as TestMul style)
+	aBig := new(big.Int).SetBits(uintToBigWords(au))
+	bBig := new(big.Int).SetBits(uintToBigWords(bu))
+	mBig := new(big.Int).SetBits(uintToBigWords(mNat.limbs))
+
+	wantBig := new(big.Int).Mul(aBig, bBig)
+	wantBig.Mod(wantBig, mBig)
+
+	want := make([]byte, len(got))
+	wantBig.FillBytes(want)
+
+	if !bytes.Equal(got, want) {
+		t.Fatalf("got %x\nwant %x", got, want)
+	}
+}
+
+func TestMontgomeryMul_2048(t *testing.T) {
+	n := 2048 / 8
+	a, b, m := make([]byte, n), make([]byte, n), make([]byte, n)
+	cryptorand.Read(a)
+	cryptorand.Read(b)
+	cryptorand.Read(m)
+
+	// Pick the highest as the modulus.
+	if bytes.Compare(a, m) > 0 {
+		a, m = m, a
+	}
+	if bytes.Compare(b, m) > 0 {
+		b, m = m, b
+	}
+
+	M, err := NewModulus(m)
+	if err != nil {
+		t.Fatal(err)
+	}
+	A, err := NewNat().SetBytes(a, M)
+	if err != nil {
+		t.Fatal(err)
+	}
+	B, err := NewNat().SetBytes(b, M)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if M.odd {
+		xR := new(Nat).set(A)
+		xR.montgomeryRepresentation(M)
+
+		out := new(Nat).reset(32)
+		out.montgomeryMul2048(xR, B, M)
+		// out.montgomeryMul(xR, B, M)
+
+		ABytes := out.Bytes(M)
+
+		mBig := new(big.Int).SetBytes(m)
+		aBig := new(big.Int).SetBytes(a)
+		bBig := new(big.Int).SetBytes(b)
+		nBig := new(big.Int).Mul(aBig, bBig)
+		nBig.Mod(nBig, mBig)
+		nBigBytes := make([]byte, len(ABytes))
+		nBig.FillBytes(nBigBytes)
+
+		if !bytes.Equal(ABytes, nBigBytes) {
+			t.Errorf("got %x, want %x", ABytes, nBigBytes)
+		}
+	} else {
+		fmt.Println("---Skipped this iteration because m is not odd---")
+	}
+
+}
+
 func TestIs(t *testing.T) {
 	checkYes := func(c choice, err string) {
 		t.Helper()
@@ -593,6 +772,18 @@ func BenchmarkMontgomeryMul(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		out.montgomeryMul(x, y, m)
+	}
+}
+
+func BenchmarkMontgomeryMul_2048(b *testing.B) {
+	x := makeBenchmarkValue()
+	y := makeBenchmarkValue()
+	out := makeBenchmarkValue()
+	m := makeBenchmarkModulus()
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		out.montgomeryMul2048(x, y, m)
 	}
 }
 

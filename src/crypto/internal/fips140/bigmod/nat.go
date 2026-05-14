@@ -894,6 +894,90 @@ func (x *Nat) montgomeryMul(a *Nat, b *Nat, m *Modulus) *Nat {
 	return x
 }
 
+func (x *Nat) montgomeryMul2048(a *Nat, b *Nat, m *Modulus) *Nat {
+	n := len(m.nat.limbs)
+	aLimbs := a.limbs[:n]
+	bLimbs := b.limbs[:n]
+
+	n = 2048 / _W
+
+	var a56, b56 [37]uint64
+	var t56 [74]uint64
+
+	// pack
+	pack56(a56[:], aLimbs)
+	pack56(b56[:], bLimbs)
+
+	// multiply
+	vmslMul2048(&a56[0], &b56[0], &t56[0], 37, nil, nil)
+
+	// unpack
+	T := make([]uint, 2*n+1)
+	unpack56(T, t56[:])
+
+	// Reduce the result from 64 limbs to 32 limbs
+	T32 := redc_final_3(T, m.nat.limbs, m.m0inv)
+
+	copy(x.reset(n).limbs, T32)
+	return x
+}
+
+func redc_final_3(T []uint, p []uint, m0inv uint) []uint {
+	n := len(p)
+
+	for i := 0; i < n; i++ {
+		m := T[i] * m0inv
+		carry := uint(0)
+
+		for j := 0; j < n; j++ {
+			// Step 1: multiply
+			hi, lo := bits.Mul(m, p[j])
+
+			// Step 2: add T[i+j]
+			lo1, c1 := bits.Add(lo, T[i+j], 0)
+
+			// Step 3: add carry
+			lo2, c2 := bits.Add(lo1, carry, 0)
+
+			// write back
+			T[i+j] = lo2
+
+			// Step 4: accumulate carry explicitly
+			carry = hi
+
+			var tmp uint
+			tmp, _ = bits.Add(carry, c1, 0)
+			carry = tmp
+
+			tmp, _ = bits.Add(carry, c2, 0)
+			carry = tmp
+		}
+
+		// Step 5: propagate carry to T[i+n]
+		k := i + n
+		var c uint
+		T[k], c = bits.Add(T[k], carry, 0)
+		k++
+
+		for c != 0 { // TODO : Failing sanity for edge case inputs when k>2n
+			T[k], c = bits.Add(T[k], 0, c)
+			k++
+		}
+
+		// Step 6: clear (optional)
+		T[i] = 0
+	}
+	// result = upper half
+	res := make([]uint, n)
+	copy(res, T[n:2*n])
+
+	// final conditional subtraction
+	if geq_final(res, p) {
+		sub_final(res, p)
+	}
+	return res
+}
+
 // addMulVVW multiplies the multi-word value x by the single-word value y,
 // adding the result to the multi-word value z and returning the final carry.
 // It can be thought of as one row of a pen-and-paper column multiplication.
